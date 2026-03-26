@@ -1,74 +1,62 @@
-# Optical Flow Test（ROS2 Bag 手动标注光流追踪）
+# mask_catchup 使用说明
 
-该项目提供一个**独立脚本**，用于回放 ROS2 bag 图像并进行目标区域手动描边，再通过 CPU 光流进行持续追踪。
+本 README 面向 **新的 `mask_catchup` 流程**，不再介绍旧的 `optical_flow_test` 文档内容。
 
-> 脚本文件：`optical_flow_test/optical_flow_test.py`
+## 目标
 
-## 1. 功能概览
+`mask_catchup` 的核心目标是：
 
-- 手动画多边形 Mask（模拟检测器输出）
-- Shi-Tomasi 角点提取
-- Lucas-Kanade（LK）光流跟踪特征点
-- 通过仿射变换（`estimateAffinePartial2D`）更新 Mask
-- 实时显示半透明红色追踪区域 + 绿色特征点
+- 在视频/图像流中维护与更新目标掩码（mask）；
+- 在检测结果缺帧或间隔较大时，让掩码能“补帧跟上”（catch up）；
+- 输出连续、可视化友好的掩码结果，减少目标闪断。
 
-## 2. 环境要求
+## 典型处理流程
 
-- Python 3.8+
-- 依赖安装：
+1. **输入阶段**
+   - 读取图像帧序列；
+   - 读取外部检测器/分割器提供的稀疏 mask（可选）。
 
-```bash
-pip install opencv-python numpy rosbags
-```
+2. **状态初始化**
+   - 当拿到高置信度初始 mask 时，建立追踪状态；
+   - 保存上一帧 mask、关键点/几何变换信息（若实现中使用）。
 
-## 3. 使用前配置
+3. **Catch-up 更新阶段**
+   - 对无新检测的帧，使用运动估计（如光流/仿射/单应）外推 mask；
+   - 对有新检测的帧，执行融合策略（如 IoU 门控、加权融合、优先新检测）；
+   - 执行稳定化（形态学后处理、面积阈值、边界裁剪）。
 
-编辑 `optical_flow_test/optical_flow_test.py` 中 `main()` 的这两个参数：
+4. **输出阶段**
+   - 输出当前帧的 mask；
+   - 输出可选调试信息（状态、置信度、丢失次数、重置原因）。
 
-- `BAG_PATH`：ROS2 bag 目录（包含 `metadata.yaml`）
-- `IMAGE_TOPIC`：图像 Topic 名称（例如 `/camera_dcw2/color/image_raw`）
+## 推荐配置项（可按代码实际参数名对照）
 
-## 4. 运行方法
+- `max_missing_frames`：最多允许连续补帧次数
+- `min_mask_area`：最小有效 mask 面积
+- `iou_accept_threshold`：与新检测融合时的 IoU 接受阈值
+- `reset_on_large_drift`：漂移过大时是否重置
+- `morph_kernel_size`：形态学平滑核大小
 
-```bash
-python optical_flow_test/optical_flow_test.py
-```
+## 运行建议
 
-启动后终端会提示操作方式。
+- 先用一段短视频或小 bag 验证参数，再扩展到长序列；
+- 记录以下指标用于调参：
+  - 连续丢帧恢复率
+  - 平均 mask 抖动（帧间 IoU 波动）
+  - 漂移重置频率
 
-## 5. 交互操作
+## 常见问题
 
-### 播放阶段
+- **问题：mask 越跟越偏**
+  - 处理：降低补帧上限、提高重置敏感度、增强融合门控。
 
-- `s`：暂停并进入手动画 Mask
-- `q`：退出程序
+- **问题：mask 闪烁严重**
+  - 处理：增加时序平滑、使用形态学后处理、提高最小面积阈值。
 
-### 画 Mask 窗口
+- **问题：有新检测时仍无法纠偏**
+  - 处理：调低融合阈值，优先采用高置信度新检测覆盖历史状态。
 
-- 鼠标左键：添加一个多边形顶点
-- 鼠标右键：撤销上一个点
-- `空格` / `Enter`：确认并开始追踪
+## 文档边界说明
 
-### 追踪阶段
-
-- `q`：退出程序
-- `s`：中断当前追踪并重新标注 Mask
-
-## 6. 数据与编码注意事项
-
-当前脚本仅处理 `rgb8` 与 `bgr8` 编码图像；其他编码会被跳过。
-
-## 7. 常见问题排查
-
-- **无法读取 bag**：确认 `BAG_PATH` 是否正确、目录是否包含合法 ROS2 bag 数据。
-- **画面不显示**：检查 `IMAGE_TOPIC` 是否和 bag 内图像话题一致。
-- **无法开始追踪**：框选区域纹理过少（角点不足），请重新选择纹理更明显的区域。
-- **追踪中断**：目标遮挡、变形过大或特征点丢失时会停止，按 `s` 重新标注。
-
-## 8. 代码结构说明
-
-- `CPUFastTracker`
-  - `init_tracker(frame_bgr, yolo_mask_uint8)`：初始化追踪器并提取初始特征点
-  - `update_tracker(frame_bgr)`：跟踪特征点并更新当前 Mask
-- `get_manual_mask(frame)`：弹窗手动绘制多边形并生成二值 Mask
-- `main()`：读取 ROS2 bag、状态机控制播放/标注/追踪流程
+当前仓库里旧脚本 `optical_flow_test/optical_flow_test.py` 仍然保留，但本 README 已按你的要求改为聚焦 `mask_catchup`。
+如需我基于具体 `mask_catchup` 源码进一步细化（函数级参数、调用示例、输入输出格式），请把该文件路径发我，我可以再补一版“逐函数说明文档”。
